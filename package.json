@@ -1,0 +1,30 @@
+{
+  "name": "codex-multi-auth",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A TypeScript CLI for managing Codex authentication profiles.",
+  "type": "module",
+  "bin": {
+    "codex-multi-auth": "./dist/index.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "dev": "tsx src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "typecheck": "tsc --noEmit"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "commander": "^15.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.5",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2"
+  }
+}
