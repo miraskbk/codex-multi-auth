@@ -2,6 +2,7 @@
 
 import { Command, InvalidArgumentError } from 'commander';
 import { readFileSync } from 'node:fs';
+import { readCurrentAuth} from './auth.js'
 
 const { version } = JSON.parse(
   readFileSync(new URL('../package.json', import.meta.url), 'utf8'),
@@ -57,7 +58,12 @@ program
   .command('add')
   .description('Save an authentication profile under a name.')
   .argument('<name>', 'profile name', profileName)
-  .action((_name: string) => unfinished('add'));
+  .action(async (_name: string) => {
+  const authData = await readCurrentAuth();
+
+  JSON.parse(authData); 
+  console.log('Auth file read successfully. Nothing saved yet.');
+});
 
 program
   .command('list')
