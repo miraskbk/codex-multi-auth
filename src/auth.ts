@@ -1,4 +1,4 @@
-import { mkdir, writeFile, readFile } from 'node:fs/promises';
+import { mkdir, writeFile, readFile, readdir } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
@@ -126,3 +126,52 @@ export async function saveProfile(
     throw error;
   }
 }
+
+
+export async function listProfiles(): Promise<
+  { name: string; email: string | undefined }[]
+> {
+  const profilesDir = join(homedir(), '.codex-multi-auth', 'profiles');
+
+  // A missing directory means no profiles have been saved yet.
+  const entries = await readdir(profilesDir, {
+    withFileTypes: true,
+  }).catch((error: unknown) => {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      return [];
+    }
+
+    throw error;
+  });
+
+  const files = entries
+    .filter(
+      (entry) =>
+        entry.isFile() &&
+        /^[a-zA-Z0-9][a-zA-Z0-9_-]*\.json$/.test(entry.name),
+    )
+    .map((entry) => entry.name)
+    .sort();
+
+  const profiles: { name: string; email: string | undefined }[] = [];
+
+  for (const file of files) {
+    const name = file.slice(0, -5); // Remove ".json".
+    const authData = await readFile(join(profilesDir, file), 'utf8');
+    const auth = parseAuthData(authData);
+    const token = auth.tokens?.id_token;
+
+    const email =
+      typeof token === 'string'
+        ? emailFromIdToken(token)
+        : undefined;
+
+    profiles.push({ name, email });
+  }
+
+  return profiles;
+}
+
+
+
+

@@ -2,7 +2,7 @@
 
 import { Command, InvalidArgumentError } from 'commander';
 import { readFileSync } from 'node:fs';
-import { emailFromIdToken, parseAuthData, readCurrentAuth, saveProfile } from './auth.js';
+import { emailFromIdToken, parseAuthData, readCurrentAuth, saveProfile, listProfiles } from './auth.js';
 
 const { version } = JSON.parse(
   readFileSync(new URL('../package.json', import.meta.url), 'utf8'),
@@ -54,6 +54,9 @@ Examples:
   codex-multi-auth remove personal
 `);
 
+
+
+
 program
   .command('add')
   .description('Save an authentication profile under a name.')
@@ -78,16 +81,43 @@ program
     console.log(`Saved profile: ${name}`);
   });
 
+
+
+
 program
   .command('list')
   .description('List saved authentication profiles.')
-  .action(() => unfinished('list'));
+  .action(async () => {
+    const profiles = await listProfiles();
+
+    if (profiles.length === 0) {
+      console.log('No saved profiles.');
+      return;
+    }
+
+    const nameWidth = Math.max(
+      ...profiles.map((profile) => profile.name.length),
+    );
+
+    for (const profile of profiles) {
+      console.log(
+        `${profile.name.padEnd(nameWidth)}  ${profile.email || 'email unavailable'}`,
+      );
+    }
+  });
+
+
+
 
 program
   .command('use')
   .description('Activate a saved authentication profile.')
   .argument('<name>', 'profile name', profileName)
   .action((_name: string) => unfinished('use'));
+
+
+
+
 
 program
   .command('remove')
