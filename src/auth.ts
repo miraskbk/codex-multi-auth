@@ -26,6 +26,32 @@ export async function readCurrentAuth(): Promise<string> {
 }
 
 
+export function emailFromIdToken(token: string): string | undefined {
+  try {
+    const parts = token.split('.');
+    if (parts.length !== 3) return undefined;
+
+    const payload: unknown = JSON.parse(
+      Buffer.from(parts[1]!, 'base64url').toString('utf8'),
+    );
+
+    if (
+      typeof payload !== 'object' ||
+      payload === null ||
+      !('email' in payload)
+    ) {
+      return undefined;
+    }
+
+    return typeof payload.email === 'string'
+      ? payload.email
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+
 
 
 export async function saveProfile(

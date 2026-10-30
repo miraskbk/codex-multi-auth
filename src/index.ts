@@ -2,7 +2,7 @@
 
 import { Command, InvalidArgumentError } from 'commander';
 import { readFileSync } from 'node:fs';
-import { readCurrentAuth, saveProfile} from './auth.js'
+import { emailFromIdToken, readCurrentAuth, saveProfile} from './auth.js'
 
 const { version } = JSON.parse(
   readFileSync(new URL('../package.json', import.meta.url), 'utf8'),
@@ -61,8 +61,19 @@ program
   .action(async (name: string) => {
   const authData = await readCurrentAuth();
 
-  JSON.parse(authData); 
-  
+  const auth = JSON.parse(authData);
+  const token = auth?.tokens?.id_token;
+
+  const email = typeof token === 'string'
+    ? emailFromIdToken(token)
+    : undefined;
+
+  console.log(
+    email
+      ? `Saving account: ${email}`
+      : 'Saving account: email unavailable',
+  );
+
   await saveProfile(name, authData);
   console.log(`Saved profile: ${name}`);
 });
