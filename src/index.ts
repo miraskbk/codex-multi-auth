@@ -2,7 +2,7 @@
 
 import { Command, InvalidArgumentError } from 'commander';
 import { readFileSync } from 'node:fs';
-import { emailFromIdToken, readCurrentAuth, saveProfile} from './auth.js'
+import { emailFromIdToken, parseAuthData, readCurrentAuth, saveProfile } from './auth.js';
 
 const { version } = JSON.parse(
   readFileSync(new URL('../package.json', import.meta.url), 'utf8'),
@@ -59,24 +59,24 @@ program
   .description('Save an authentication profile under a name.')
   .argument('<name>', 'profile name', profileName)
   .action(async (name: string) => {
-  const authData = await readCurrentAuth();
+    const authData = await readCurrentAuth();
 
-  const auth = JSON.parse(authData);
-  const token = auth?.tokens?.id_token;
+    const auth = parseAuthData(authData);
+    const token = auth.tokens?.id_token;
 
-  const email = typeof token === 'string'
-    ? emailFromIdToken(token)
-    : undefined;
+    const email = typeof token === 'string'
+      ? emailFromIdToken(token)
+      : undefined;
 
-  console.log(
-    email
-      ? `Saving account: ${email}`
-      : 'Saving account: email unavailable',
-  );
+    console.log(
+      email
+        ? `Saving account: ${email}`
+        : 'Saving account: email unavailable',
+    );
 
-  await saveProfile(name, authData);
-  console.log(`Saved profile: ${name}`);
-});
+    await saveProfile(name, authData);
+    console.log(`Saved profile: ${name}`);
+  });
 
 program
   .command('list')
