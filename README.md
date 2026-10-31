@@ -5,3 +5,4 @@
 
 
 `added profile management and auth`
+`added active profile listing`
