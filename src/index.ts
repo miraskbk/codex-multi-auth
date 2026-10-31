@@ -15,10 +15,6 @@ function color(text: string, code: string): string {
     : text;
 }
 
-function unfinished(command: string): void {
-  throw new Error(`The "${command}" command is not implemented yet.`);
-}
-
 function profileName(value: string): string {
   if (!/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/.test(value)) {
     throw new InvalidArgumentError(
@@ -104,9 +100,14 @@ program
       ...profiles.map((profile) => profile.name.length),
     );
 
+    const emailWidth = Math.max(
+      ...profiles.map((profile) => (profile.email || 'email unavailable').length),
+    );
+
     for (const profile of profiles) {
+      const email = profile.email || 'email unavailable';
       console.log(
-        `${profile.name.padEnd(nameWidth)}  ${profile.email || 'email unavailable'}`,
+        `${profile.name.padEnd(nameWidth)}  ${email.padEnd(emailWidth)}  ${profile.status}`,
       );
     }
   });

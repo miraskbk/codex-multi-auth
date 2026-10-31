@@ -2,6 +2,7 @@ import { mkdir, writeFile, readFile, readdir, rename, rm, stat } from 'node:fs/p
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
+import { isLockInUse, withDirectoryLock, type LockOwner } from './locks.js';
 
 
 
@@ -134,51 +135,69 @@ export async function saveProfile(
 
 
 
-export async function listProfiles(): Promise<
-  { name: string; email: string | undefined }[]
-> {
-  const profilesDir = join(homedir(), '.codex-multi-auth', 'profiles');
+export interface ProfileSummary {
+  name: string;
+  email: string | undefined;
+  status: 'saved' | 'in use' | 'signed out' | 'invalid' | 'unreadable';
+}
 
+export async function listProfiles(): Promise<ProfileSummary[]> {
+  const root = join(homedir(), '.codex-multi-auth');
+  const readEntries = (path: string) => readdir(path, { withFileTypes: true })
+    .catch((error: unknown) => {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
+      throw error;
+    });
 
-  const entries = await readdir(profilesDir, {
-    withFileTypes: true,
-  }).catch((error: unknown) => {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-      return [];
+  const [savedEntries, homeEntries] = await Promise.all([
+    readEntries(join(root, 'profiles')),
+    readEntries(join(root, 'homes')),
+  ]);
+
+  const names = new Set([
+    ...savedEntries
+      .filter((entry) => entry.isFile() && /^[a-zA-Z0-9][a-zA-Z0-9_-]*\.json$/.test(entry.name))
+      .map((entry) => entry.name.slice(0, -5)),
+    ...homeEntries
+      .filter((entry) => entry.isDirectory() && /^[a-zA-Z0-9][a-zA-Z0-9_-]*$/.test(entry.name))
+      .map((entry) => entry.name),
+  ]);
+
+  const profiles: ProfileSummary[] = [];
+
+  for (const name of [...names].sort()) {
+    let data: string | undefined;
+    let inUse: boolean;
+    try {
+      inUse = await isLockInUse(join(root, 'locks', name));
+      const home = profileHome(name);
+      data = await readOptional(join(home, 'auth.json'));
+      if (data === undefined) {
+        if (await exists(home)) {
+          profiles.push({ name, email: undefined, status: 'signed out' });
+          continue;
+        }
+        data = await readOptional(profilePath(name));
+      }
+    } catch {
+      profiles.push({ name, email: undefined, status: 'unreadable' });
+      continue;
     }
 
-    throw error;
-  });
+    if (data === undefined) continue;
 
-  const files = entries
-    .filter(
-      (entry) =>
-        entry.isFile() &&
-        /^[a-zA-Z0-9][a-zA-Z0-9_-]*\.json$/.test(entry.name),
-    )
-    .map((entry) => entry.name)
-    .sort();
-
-  const profiles: { name: string; email: string | undefined }[] = [];
-
-  for (const file of files) {
-    const name = file.slice(0, -5); 
-    const authData = await readProfileAuth(name);
-    const auth = parseAuthData(authData);
-    const token = auth.tokens?.id_token;
-
-    const email =
-      typeof token === 'string'
-        ? emailFromIdToken(token)
-        : undefined;
-
-    profiles.push({ name, email });
+    try {
+      const auth = parseAuthData(data);
+      const token = auth.tokens?.id_token;
+      const email = typeof token === 'string' ? emailFromIdToken(token) : undefined;
+      profiles.push({ name, email, status: inUse ? 'in use' : 'saved' });
+    } catch {
+      profiles.push({ name, email: undefined, status: 'invalid' });
+    }
   }
 
   return profiles;
 }
-
-
 
 
 export function profileHome(name: string): string {
@@ -255,23 +274,7 @@ export async function readProfileAuth(name: string): Promise<string> {
 
 
 
-async function withDirectoryLock<T>(path: string, action: () => Promise<T>): Promise<T> {
-  try {
-    await mkdir(path, { mode: 0o700 });
-  } catch (error: unknown) {
-    if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
-      throw new Error(`Profile or auth file is already in use. If a previous process crashed, close its Codex session before removing the stale lock: ${path}`);
-    }
-    throw error;
-  }
-  try {
-    return await action();
-  } finally {
-    await rm(path, { recursive: true, force: true });
-  }
-}
-
-export async function withProfileLock<T>(name: string, action: () => Promise<T>): Promise<T> {
+export async function withProfileLock<T>(name: string, action: (owner: LockOwner) => Promise<T>): Promise<T> {
   validateProfileName(name);
   const locks = join(homedir(), '.codex-multi-auth', 'locks');
   await mkdir(locks, { recursive: true, mode: 0o700 });

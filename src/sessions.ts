@@ -1,6 +1,6 @@
-import { spawn } from 'node:child_process';
 import { constants } from 'node:os';
 import { createInterface } from 'node:readline';
+import type { LockOwner } from './locks.js';
 import {
   emailFromIdToken,
   parseAuthData,
@@ -33,27 +33,27 @@ export async function runProfile(name: string, args: string[]): Promise<number> 
   if (args.some((arg) => arg === '--remote' || arg.startsWith('--remote=') || /cli_auth_credentials_store\s*=/.test(arg))) {
     throw new Error('Profile runs require local Codex with file-based credential storage.');
   }
-  return withProfileLock(name, async () => {
+  return withProfileLock(name, async (owner) => {
     const home = await prepareProfileHome(name);
     try {
-      return await new Promise<number>((resolve, reject) => {
-        const child = spawn('codex', ['-c', 'cli_auth_credentials_store="file"', ...args], {
-          env: profileEnvironment(home),
-          stdio: 'inherit',
-        });
-        const interrupt = () => { child.kill('SIGINT'); };
-        const terminate = () => { child.kill('SIGTERM'); };
-        process.on('SIGINT', interrupt);
-        process.on('SIGTERM', terminate);
-        child.once('error', (error) => reject(codexError(error)));
-        child.once('close', (code, signal) => {
-          process.off('SIGINT', interrupt);
-          process.off('SIGTERM', terminate);
-          resolve(code ?? (signal ? 128 + constants.signals[signal] : 1));
-        });
-      });
+      const { child, completion } = await owner.spawn('codex', ['-c', 'cli_auth_credentials_store="file"', ...args], {
+        env: profileEnvironment(home),
+        stdio: 'inherit',
+      }).catch((error: Error) => { throw codexError(error); });
+      const interrupt = () => { child.kill('SIGINT'); };
+      const terminate = () => { child.kill('SIGTERM'); };
+      process.on('SIGINT', interrupt);
+      process.on('SIGTERM', terminate);
+      try {
+        const { code, signal } = await completion;
+        return code ?? (signal ? 128 + constants.signals[signal] : 1);
+      } catch (error: unknown) {
+        throw codexError(error as Error);
+      } finally {
+        process.off('SIGINT', interrupt);
+        process.off('SIGTERM', terminate);
+      }
     } finally {
-
       await syncProfileHome(name);
     }
   });
@@ -113,14 +113,14 @@ export async function verifyApiKey(key: string, request: typeof fetch = fetch): 
 }
 
 
-async function refreshChatGPT(home: string): Promise<void> {
+async function refreshChatGPT(home: string, owner: LockOwner): Promise<void> {
+  const { child, completion } = await owner.spawn('codex', ['app-server', '-c', 'cli_auth_credentials_store="file"'], {
+    env: profileEnvironment(home),
+    stdio: ['pipe', 'pipe', 'ignore'],
+    cwd: home,
+  }).catch((error: Error) => { throw codexError(error); });
   await new Promise<void>((resolve, reject) => {
-    const child = spawn('codex', ['app-server', '-c', 'cli_auth_credentials_store="file"'], {
-      env: profileEnvironment(home),
-      stdio: ['pipe', 'pipe', 'ignore'],
-      cwd: home,
-    });
-    const lines = createInterface({ input: child.stdout });
+    const lines = createInterface({ input: child.stdout! });
     let finished = false;
     let failure: Error | undefined;
     let killTimer: ReturnType<typeof setTimeout> | undefined;
@@ -135,19 +135,18 @@ async function refreshChatGPT(home: string): Promise<void> {
       failure = error;
       clearTimeout(timeout);
       lines.close();
-      child.stdin.end();
+      child.stdin!.end();
       child.kill('SIGTERM');
       killTimer = setTimeout(() => child.kill('SIGKILL'), 2_000);
       killTimer.unref();
     }
 
     function send(message: unknown): void {
-      child.stdin.write(`${JSON.stringify(message)}\n`);
+      child.stdin!.write(`${JSON.stringify(message)}\n`);
     }
 
-    child.stdin.on('error', () => finish(new Error('Codex closed the verification connection.')));
-    child.once('error', (error) => finish(codexError(error)));
-    child.once('close', () => {
+    child.stdin!.on('error', () => finish(new Error('Codex closed the verification connection.')));
+    const closed = () => {
       process.off('SIGINT', interrupted);
       process.off('SIGTERM', interrupted);
       clearTimeout(timeout);
@@ -156,6 +155,10 @@ async function refreshChatGPT(home: string): Promise<void> {
       if (!finished) reject(new Error('Codex exited before verifying the account.'));
       else if (failure) reject(failure);
       else resolve();
+    };
+    void completion.then(closed, (error: Error) => {
+      if (!finished) { finished = true; failure = codexError(error); }
+      closed();
     });
     lines.on('line', (line) => {
       if (finished) return;
@@ -187,7 +190,7 @@ async function refreshChatGPT(home: string): Promise<void> {
 }
 
 export async function checkProfile(name: string, online: boolean): Promise<ProfileCheck> {
-  return withProfileLock(name, async () => {
+  return withProfileLock(name, async (owner) => {
     const data = await readProfileAuth(name);
     const result = inspectAuth(data);
     if (!online) return result;
@@ -201,7 +204,7 @@ export async function checkProfile(name: string, online: boolean): Promise<Profi
     }
     const home = await prepareProfileHome(name);
     try {
-      await refreshChatGPT(home);
+      await refreshChatGPT(home, owner);
     } finally {
       await syncProfileHome(name);
     }
