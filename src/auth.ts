@@ -1,7 +1,7 @@
-import { mkdir, writeFile, readFile, readdir, rename, rm } from 'node:fs/promises';
+import { mkdir, writeFile, readFile, readdir, rename, rm, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import {randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto';
 
 
 
@@ -97,6 +97,7 @@ export function emailFromIdToken(token: string): string | undefined {
 
 
 
+
 export async function saveProfile(
   name: string,
   authData: string,
@@ -131,6 +132,8 @@ export async function saveProfile(
 }
 
 
+
+
 export async function listProfiles(): Promise<
   { name: string; email: string | undefined }[]
 > {
@@ -160,7 +163,7 @@ export async function listProfiles(): Promise<
 
   for (const file of files) {
     const name = file.slice(0, -5); 
-    const authData = await readFile(join(profilesDir, file), 'utf8');
+    const authData = await readProfileAuth(name);
     const auth = parseAuthData(authData);
     const token = auth.tokens?.id_token;
 
@@ -178,82 +181,262 @@ export async function listProfiles(): Promise<
 
 
 
-export async function useProfile(
-  name: string,
-): Promise<{ email: string | undefined; backupPath: string | undefined }> {
+export function profileHome(name: string): string {
+  validateProfileName(name);
+  return join(homedir(), '.codex-multi-auth', 'homes', name);
+}
+
+function validateProfileName(name: string): void {
   if (!/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/.test(name)) {
     throw new Error('Invalid profile name.');
   }
-
-  const profilePath = join(
-    homedir(),
-    '.codex-multi-auth',
-    'profiles',
-    `${name}.json`,
-  );
-
-  const authData = await readFile(profilePath, 'utf8').catch(
-    (error: unknown) => {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-        throw new Error(`Profile "${name}" does not exist.`);
-      }
-
-      throw error;
-    },
-  );
-
-  // Validate before changing the current credentials.
-  const auth = parseAuthData(authData);
-  const token = auth.tokens?.id_token;
-  const email =
-    typeof token === 'string' ? emailFromIdToken(token) : undefined;
-
-  const codexHome = process.env.CODEX_HOME || join(homedir(), '.codex');
-  const authPath = join(codexHome, 'auth.json');
-
-  await mkdir(codexHome, { recursive: true, mode: 0o700 });
-
-  const id = randomUUID();
-  const tempPath = join(codexHome, `.auth-${id}.tmp`);
-  let backupPath: string | undefined;
-
-  // Stage the replacement with private permissions.
-  await writeFile(tempPath, authData, {
-    encoding: 'utf8',
-    flag: 'wx',
-    mode: 0o600,
-  });
-
-  try {
-    const currentAuth = await readFile(authPath, 'utf8').catch(
-      (error: unknown) => {
-        if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-          return undefined;
-        }
-
-        throw error;
-      },
-    );
-
-    if (currentAuth !== undefined) {
-      backupPath = join(codexHome, `auth.json.backup-${id}`);
-
-      await writeFile(backupPath, currentAuth, {
-        encoding: 'utf8',
-        flag: 'wx',
-        mode: 0o600,
-      });
-    }
-
-    // Replace auth.json atomically after the backup succeeds.
-    await rename(tempPath, authPath);
-  } finally {
-    await rm(tempPath, { force: true });
-  }
-
-  return { email, backupPath };
 }
 
 
 
 
+
+function profilePath(name: string): string {
+  validateProfileName(name);
+  return join(homedir(), '.codex-multi-auth', 'profiles', `${name}.json`);
+}
+
+async function readOptional(path: string): Promise<string | undefined> {
+  try {
+    return await readFile(path, 'utf8');
+  } catch (error: unknown) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
+    throw error;
+  }
+}
+
+
+
+
+async function exists(path: string): Promise<boolean> {
+  try {
+    await stat(path);
+    return true;
+  } catch (error: unknown) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+    throw error;
+  }
+}
+
+
+
+
+export async function writeAuthAtomically(path: string, data: string): Promise<void> {
+  const temporary = `${path}.${randomUUID()}.tmp`;
+  await writeFile(temporary, data, { encoding: 'utf8', flag: 'wx', mode: 0o600 });
+  try {
+    await rename(temporary, path);
+  } finally {
+    await rm(temporary, { force: true });
+  }
+}
+
+
+
+export async function readProfileAuth(name: string): Promise<string> {
+  const home = profileHome(name);
+  let data = await readOptional(join(home, 'auth.json'));
+  if (data === undefined) {
+    
+    if (await exists(home)) {
+      throw new Error(`Profile "${name}" is signed out. Run: codex-multi-auth run ${name} -- login`);
+    }
+    data = await readOptional(profilePath(name));
+  }
+  if (data === undefined) throw new Error(`Profile "${name}" does not exist.`);
+  parseAuthData(data);
+  return data;
+}
+
+
+
+async function withDirectoryLock<T>(path: string, action: () => Promise<T>): Promise<T> {
+  try {
+    await mkdir(path, { mode: 0o700 });
+  } catch (error: unknown) {
+    if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
+      throw new Error(`Profile or auth file is already in use. If a previous process crashed, close its Codex session before removing the stale lock: ${path}`);
+    }
+    throw error;
+  }
+  try {
+    return await action();
+  } finally {
+    await rm(path, { recursive: true, force: true });
+  }
+}
+
+export async function withProfileLock<T>(name: string, action: () => Promise<T>): Promise<T> {
+  validateProfileName(name);
+  const locks = join(homedir(), '.codex-multi-auth', 'locks');
+  await mkdir(locks, { recursive: true, mode: 0o700 });
+  return withDirectoryLock(join(locks, name), action);
+}
+
+
+
+
+
+export async function prepareProfileHome(name: string): Promise<string> {
+  const home = profileHome(name);
+  if (await exists(home)) return home;
+  const data = await readProfileAuth(name);
+  await mkdir(join(homedir(), '.codex-multi-auth', 'homes'), { recursive: true, mode: 0o700 });
+  await mkdir(home, { mode: 0o700 });
+  try {
+    await writeFile(join(home, 'config.toml'), 'cli_auth_credentials_store = "file"\n', { mode: 0o600, flag: 'wx' });
+    await writeAuthAtomically(join(home, 'auth.json'), data);
+  } catch (error: unknown) {
+    await rm(home, { recursive: true, force: true });
+    throw error;
+  }
+  return home;
+}
+
+export async function syncProfileHome(name: string): Promise<void> {
+  const data = await readOptional(join(profileHome(name), 'auth.json'));
+  if (data === undefined) return; 
+  parseAuthData(data);
+  await writeAuthAtomically(profilePath(name), data);
+}
+
+function digest(data: string): string {
+  return createHash('sha256').update(data).digest('hex');
+}
+
+function authIdentity(data: string): string | null {
+  const auth = parseAuthData(data);
+  if (isNonEmptyString(auth.OPENAI_API_KEY)) return digest(auth.OPENAI_API_KEY);
+  const accountId = auth.tokens?.account_id;
+  const token = auth.tokens?.id_token;
+  let subject: unknown;
+  if (typeof token === 'string') {
+    try {
+      const payload: unknown = JSON.parse(Buffer.from(token.split('.')[1] ?? '', 'base64url').toString('utf8'));
+      if (isRecord(payload)) subject = payload.sub;
+    } catch { }
+  }
+  if (!isNonEmptyString(accountId) && !isNonEmptyString(subject)) return null;
+  return digest(JSON.stringify([accountId ?? null, subject ?? null]));
+}
+
+interface ActiveProfile {
+  name: string;
+  identity: string | null;
+  hash: string;
+}
+
+async function readActiveProfile(path: string): Promise<ActiveProfile | undefined> {
+  const data = await readOptional(path);
+  if (data === undefined) return undefined;
+  let active: unknown;
+  try { active = JSON.parse(data); } catch { throw new Error('Invalid active-profile metadata.'); }
+  if (!isRecord(active) || typeof active.name !== 'string' ||
+      typeof active.hash !== 'string' || !(active.identity === null || typeof active.identity === 'string')) {
+    throw new Error('Invalid active-profile metadata.');
+  }
+  validateProfileName(active.name);
+  return { name: active.name, identity: active.identity, hash: active.hash };
+}
+
+export async function useProfile(
+  name: string,
+): Promise<{ email: string | undefined; backupPath: string | undefined }> {
+  await readProfileAuth(name);
+  const codexHome = process.env.CODEX_HOME || join(homedir(), '.codex');
+  const authPath = join(codexHome, 'auth.json');
+  const activePath = join(codexHome, '.codex-multi-auth-active.json');
+  await mkdir(codexHome, { recursive: true, mode: 0o700 });
+
+  return withDirectoryLock(join(codexHome, '.codex-multi-auth-switch.lock'), async () => {
+    const active = await readActiveProfile(activePath);
+    const names = [...new Set([name, ...(active ? [active.name] : [])])].sort();
+    async function lockProfiles(index: number): Promise<{ email: string | undefined; backupPath: string | undefined }> {
+      const next = names[index];
+      if (next !== undefined) return withProfileLock(next, () => lockProfiles(index + 1));
+
+      const current = await readOptional(authPath);
+      const activeExists = active !== undefined && (
+      await exists(profilePath(active.name)) ||
+      await exists(profileHome(active.name))
+);
+
+if (
+  active &&
+  activeExists &&
+  current !== undefined &&
+  digest(current) !== active.hash
+) {
+
+        let matches = false;
+        if (active.identity !== null) {
+          try { matches = authIdentity(current) === active.identity; } catch {  }
+        }
+        if (matches) {
+          parseAuthData(current);
+          const saved = await readProfileAuth(active.name);
+          if (digest(saved) !== active.hash && saved !== current) {
+            throw new Error(`Credentials for "${active.name}" changed in both the default and isolated homes. Resolve the two logins before switching; neither copy was overwritten.`);
+          }
+          await writeAuthAtomically(profilePath(active.name), current);
+          const home = profileHome(active.name);
+          if (await exists(home)) await writeAuthAtomically(join(home, 'auth.json'), current);
+        }
+      }
+
+      const data = await readProfileAuth(name);
+      const auth = parseAuthData(data);
+      const token = auth.tokens?.id_token;
+      const email = typeof token === 'string' ? emailFromIdToken(token) : undefined;
+      let backupPath: string | undefined;
+      if (current !== undefined) {
+        backupPath = join(codexHome, `auth.json.backup-${randomUUID()}`);
+        await writeFile(backupPath, current, { encoding: 'utf8', flag: 'wx', mode: 0o600 });
+      }
+      await writeAuthAtomically(authPath, data);
+      await writeAuthAtomically(activePath, JSON.stringify({ name, identity: authIdentity(data), hash: digest(data) }));
+      return { email, backupPath };
+    }
+    return lockProfiles(0);
+  });
+}
+
+
+
+
+export async function removeProfile(
+  name: string,
+  force = false,
+): Promise<void> {
+  await withProfileLock(name, async () => {
+    const savedPath = profilePath(name);
+    const home = profileHome(name);
+
+    const hasSavedProfile = await exists(savedPath);
+    const hasHome = await exists(home);
+
+    if (!hasSavedProfile && !hasHome) {
+      throw new Error(`Profile "${name}" does not exist.`);
+    }
+
+
+    if (hasHome && !force) {
+      throw new Error(
+        `Profile "${name}" has an isolated Codex home containing ` +
+        'credentials, session history, and configuration. ' +
+        'Use --force to delete it.',
+      );
+    }
+
+    if (hasHome) {
+      await rm(home, { recursive: true });
+    }
+
+    await rm(savedPath, { force: true });
+  });
+}

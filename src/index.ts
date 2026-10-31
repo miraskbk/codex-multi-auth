@@ -2,7 +2,8 @@
 
 import { Command, InvalidArgumentError } from 'commander';
 import { readFileSync } from 'node:fs';
-import { emailFromIdToken, parseAuthData, readCurrentAuth, saveProfile, listProfiles, useProfile } from './auth.js';
+import { emailFromIdToken, parseAuthData, readCurrentAuth, saveProfile, listProfiles, useProfile, removeProfile } from './auth.js';
+import { checkProfile, runProfile } from './sessions.js';
 
 const { version } = JSON.parse(
   readFileSync(new URL('../package.json', import.meta.url), 'utf8'),
@@ -33,6 +34,7 @@ program
   .name('codex-multi-auth')
   .description('Manage multiple Codex authentication profiles.')
   .version(version)
+  .enablePositionalOptions()
   .showHelpAfterError('(run with --help for usage)')
   .showSuggestionAfterError()
   .configureHelp({
@@ -51,6 +53,9 @@ Examples:
   codex-multi-auth add personal
   codex-multi-auth list
   codex-multi-auth use personal
+  codex-multi-auth run personal
+  codex-multi-auth run work -- exec "review this repository"
+  codex-multi-auth check personal --online
   codex-multi-auth remove personal
 `);
 
@@ -129,10 +134,45 @@ program
 
 
 program
+  .command('run')
+  .description('Run Codex with an isolated profile home and save refreshed credentials on exit.')
+  .argument('<name>', 'profile name', profileName)
+  .argument('[args...]', 'arguments passed to Codex (optionally after --)')
+  .allowUnknownOption()
+  .passThroughOptions()
+  .action(async (name: string, args: string[]) => {
+    process.exitCode = await runProfile(name, args);
+  });
+
+
+
+program
+  .command('check')
+  .description('Inspect saved credentials; --online verifies with the server without a model request.')
+  .argument('<name>', 'profile name', profileName)
+  .option('--online', 'Verify API key access or refresh the ChatGPT session over the network.')
+  .action(async (name: string, options: { online?: boolean }) => {
+    const result = await checkProfile(name, options.online === true);
+    console.log(`Profile: ${name}`);
+    console.log(`Account: ${result.email || 'email unavailable'}`);
+    console.log(`Method: ${result.method}`);
+    console.log(result.status);
+    if (result.expired) process.exitCode = 1;
+  });
+
+
+
+
+
+program
   .command('remove')
   .description('Remove a saved authentication profile.')
   .argument('<name>', 'profile name', profileName)
-  .action((_name: string) => unfinished('remove'));
+  .option('--force', 'Also delete the isolated home and session history.')
+  .action(async (name: string, options: { force?: boolean }) => {
+    await removeProfile(name, options.force === true);
+    console.log(`Removed profile: ${name}`);
+  });
 
 
 try {
