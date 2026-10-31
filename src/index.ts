@@ -2,7 +2,7 @@
 
 import { Command, InvalidArgumentError } from 'commander';
 import { readFileSync } from 'node:fs';
-import { emailFromIdToken, parseAuthData, readCurrentAuth, saveProfile, listProfiles } from './auth.js';
+import { emailFromIdToken, parseAuthData, readCurrentAuth, saveProfile, listProfiles, useProfile } from './auth.js';
 
 const { version } = JSON.parse(
   readFileSync(new URL('../package.json', import.meta.url), 'utf8'),
@@ -113,7 +113,16 @@ program
   .command('use')
   .description('Activate a saved authentication profile.')
   .argument('<name>', 'profile name', profileName)
-  .action((_name: string) => unfinished('use'));
+  .action(async (name: string) => {
+    const { email, backupPath } = await useProfile(name);
+
+    console.log(`Activated profile: ${name}`);
+    console.log(`Account: ${email || 'email unavailable'}`);
+
+    if (backupPath) {
+      console.log(`Previous auth backed up to: ${backupPath}`);
+    }
+  });
 
 
 

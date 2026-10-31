@@ -5,4 +5,9 @@
 
 
 `added profile management and auth`
+
 `added active profile listing`
+
+
+`added better profile handline with file backup`
+

@@ -1,6 +1,9 @@
-import { mkdir, writeFile, readFile, readdir } from 'node:fs/promises';
+import { mkdir, writeFile, readFile, readdir, rename, rm } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import {randomUUID } from 'node:crypto'
+
+
 
 interface AuthData {
   OPENAI_API_KEY?: unknown;
@@ -133,7 +136,7 @@ export async function listProfiles(): Promise<
 > {
   const profilesDir = join(homedir(), '.codex-multi-auth', 'profiles');
 
-  // A missing directory means no profiles have been saved yet.
+
   const entries = await readdir(profilesDir, {
     withFileTypes: true,
   }).catch((error: unknown) => {
@@ -156,7 +159,7 @@ export async function listProfiles(): Promise<
   const profiles: { name: string; email: string | undefined }[] = [];
 
   for (const file of files) {
-    const name = file.slice(0, -5); // Remove ".json".
+    const name = file.slice(0, -5); 
     const authData = await readFile(join(profilesDir, file), 'utf8');
     const auth = parseAuthData(authData);
     const token = auth.tokens?.id_token;
@@ -170,6 +173,85 @@ export async function listProfiles(): Promise<
   }
 
   return profiles;
+}
+
+
+
+
+export async function useProfile(
+  name: string,
+): Promise<{ email: string | undefined; backupPath: string | undefined }> {
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/.test(name)) {
+    throw new Error('Invalid profile name.');
+  }
+
+  const profilePath = join(
+    homedir(),
+    '.codex-multi-auth',
+    'profiles',
+    `${name}.json`,
+  );
+
+  const authData = await readFile(profilePath, 'utf8').catch(
+    (error: unknown) => {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+        throw new Error(`Profile "${name}" does not exist.`);
+      }
+
+      throw error;
+    },
+  );
+
+  // Validate before changing the current credentials.
+  const auth = parseAuthData(authData);
+  const token = auth.tokens?.id_token;
+  const email =
+    typeof token === 'string' ? emailFromIdToken(token) : undefined;
+
+  const codexHome = process.env.CODEX_HOME || join(homedir(), '.codex');
+  const authPath = join(codexHome, 'auth.json');
+
+  await mkdir(codexHome, { recursive: true, mode: 0o700 });
+
+  const id = randomUUID();
+  const tempPath = join(codexHome, `.auth-${id}.tmp`);
+  let backupPath: string | undefined;
+
+  // Stage the replacement with private permissions.
+  await writeFile(tempPath, authData, {
+    encoding: 'utf8',
+    flag: 'wx',
+    mode: 0o600,
+  });
+
+  try {
+    const currentAuth = await readFile(authPath, 'utf8').catch(
+      (error: unknown) => {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+          return undefined;
+        }
+
+        throw error;
+      },
+    );
+
+    if (currentAuth !== undefined) {
+      backupPath = join(codexHome, `auth.json.backup-${id}`);
+
+      await writeFile(backupPath, currentAuth, {
+        encoding: 'utf8',
+        flag: 'wx',
+        mode: 0o600,
+      });
+    }
+
+    // Replace auth.json atomically after the backup succeeds.
+    await rename(tempPath, authPath);
+  } finally {
+    await rm(tempPath, { force: true });
+  }
+
+  return { email, backupPath };
 }
 
 
