@@ -3,7 +3,7 @@
 import { Command, InvalidArgumentError } from 'commander';
 import { readFileSync } from 'node:fs';
 import { emailFromIdToken, parseAuthData, readCurrentAuth, saveProfile, listProfiles, useProfile, removeProfile } from './auth.js';
-import { checkProfile, runProfile } from './sessions.js';
+import { checkProfile, loginProfile, runProfile } from './sessions.js';
 
 const { version } = JSON.parse(
   readFileSync(new URL('../package.json', import.meta.url), 'utf8'),
@@ -46,6 +46,7 @@ program
   )
   .addHelpText('after', `
 Examples:
+  codex-multi-auth login work
   codex-multi-auth add personal
   codex-multi-auth list
   codex-multi-auth use personal
@@ -57,6 +58,20 @@ Examples:
 
 
 
+
+program
+  .command('login')
+  .description('Sign in to a new or existing profile without changing the default Codex account.')
+  .argument('<name>', 'profile name', profileName)
+  .option('--device-auth', 'Sign in using a device code.')
+  .option('--with-api-key', 'Read an API key from standard input.')
+  .action(async (name: string, options: { deviceAuth?: boolean; withApiKey?: boolean }) => {
+    const result = await loginProfile(name, options);
+    process.exitCode = result.code;
+    if (result.code !== 0) return;
+    console.log(`Signed in profile: ${name}`);
+    console.log(`Account: ${result.email || 'email unavailable'}`);
+  });
 
 program
   .command('add')

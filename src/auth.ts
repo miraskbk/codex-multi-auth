@@ -1,4 +1,4 @@
-import { mkdir, writeFile, readFile, readdir, rename, rm, stat } from 'node:fs/promises';
+import { mkdir, mkdtemp, writeFile, readFile, readdir, rename, rm, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
@@ -301,10 +301,42 @@ export async function prepareProfileHome(name: string): Promise<string> {
   return home;
 }
 
+export async function prepareLoginHome(name: string): Promise<string> {
+  validateProfileName(name);
+  const homes = join(homedir(), '.codex-multi-auth', 'homes');
+  await mkdir(homes, { recursive: true, mode: 0o700 });
+  const home = await mkdtemp(join(homes, `.login-${name}-`));
+  try {
+    await writeFile(join(home, 'config.toml'), 'cli_auth_credentials_store = "file"\n', { mode: 0o600, flag: 'wx' });
+  } catch (error: unknown) {
+    await rm(home, { recursive: true, force: true });
+    throw error;
+  }
+  return home;
+}
+
+export async function completeProfileLogin(name: string, loginHome: string): Promise<string | undefined> {
+  const data = await readOptional(join(loginHome, 'auth.json'));
+  if (data === undefined) {
+    throw new Error('Codex login finished without writing credentials. Profile was not saved.');
+  }
+  const auth = parseAuthData(data);
+  const home = profileHome(name);
+  if (!await exists(home)) {
+    await mkdir(home, { mode: 0o700 });
+    await writeFile(join(home, 'config.toml'), 'cli_auth_credentials_store = "file"\n', { mode: 0o600, flag: 'wx' });
+  }
+  await writeAuthAtomically(join(home, 'auth.json'), data);
+  await syncProfileHome(name);
+  const token = auth.tokens?.id_token;
+  return typeof token === 'string' ? emailFromIdToken(token) : undefined;
+}
+
 export async function syncProfileHome(name: string): Promise<void> {
   const data = await readOptional(join(profileHome(name), 'auth.json'));
   if (data === undefined) return; 
   parseAuthData(data);
+  await mkdir(join(homedir(), '.codex-multi-auth', 'profiles'), { recursive: true, mode: 0o700 });
   await writeAuthAtomically(profilePath(name), data);
 }
 

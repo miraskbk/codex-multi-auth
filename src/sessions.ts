@@ -1,10 +1,13 @@
 import { constants } from 'node:os';
+import { rm } from 'node:fs/promises';
 import { createInterface } from 'node:readline';
 import type { LockOwner } from './locks.js';
 import {
+  completeProfileLogin,
   emailFromIdToken,
   parseAuthData,
   prepareProfileHome,
+  prepareLoginHome,
   readProfileAuth,
   syncProfileHome,
   withProfileLock,
@@ -28,6 +31,49 @@ function codexError(error: Error): Error {
     : 'Unable to start Codex CLI.');
 }
 
+async function executeCodex(owner: LockOwner, home: string, args: string[]): Promise<number> {
+  const { child, completion } = await owner.spawn('codex', ['-c', 'cli_auth_credentials_store="file"', ...args], {
+    env: profileEnvironment(home),
+    stdio: 'inherit',
+  }).catch((error: Error) => { throw codexError(error); });
+  const interrupt = () => { child.kill('SIGINT'); };
+  const terminate = () => { child.kill('SIGTERM'); };
+  process.on('SIGINT', interrupt);
+  process.on('SIGTERM', terminate);
+  try {
+    const { code, signal } = await completion;
+    return code ?? (signal ? 128 + constants.signals[signal] : 1);
+  } catch (error: unknown) {
+    throw codexError(error as Error);
+  } finally {
+    process.off('SIGINT', interrupt);
+    process.off('SIGTERM', terminate);
+  }
+}
+
+export async function loginProfile(
+  name: string,
+  options: { deviceAuth?: boolean; withApiKey?: boolean } = {},
+): Promise<{ code: number; email: string | undefined }> {
+  if (options.deviceAuth && options.withApiKey) {
+    throw new Error('Choose either --device-auth or --with-api-key.');
+  }
+  return withProfileLock(name, async (owner) => {
+    const home = await prepareLoginHome(name);
+    const args = ['login'];
+    if (options.deviceAuth) args.push('--device-auth');
+    if (options.withApiKey) args.push('--with-api-key');
+    try {
+      const code = await executeCodex(owner, home, args);
+      if (code !== 0) return { code, email: undefined };
+      const email = await completeProfileLogin(name, home);
+      return { code, email };
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+}
+
 export async function runProfile(name: string, args: string[]): Promise<number> {
   if (args[0] === '--') args = args.slice(1);
   if (args.some((arg) => arg === '--remote' || arg.startsWith('--remote=') || /cli_auth_credentials_store\s*=/.test(arg))) {
@@ -36,23 +82,7 @@ export async function runProfile(name: string, args: string[]): Promise<number> 
   return withProfileLock(name, async (owner) => {
     const home = await prepareProfileHome(name);
     try {
-      const { child, completion } = await owner.spawn('codex', ['-c', 'cli_auth_credentials_store="file"', ...args], {
-        env: profileEnvironment(home),
-        stdio: 'inherit',
-      }).catch((error: Error) => { throw codexError(error); });
-      const interrupt = () => { child.kill('SIGINT'); };
-      const terminate = () => { child.kill('SIGTERM'); };
-      process.on('SIGINT', interrupt);
-      process.on('SIGTERM', terminate);
-      try {
-        const { code, signal } = await completion;
-        return code ?? (signal ? 128 + constants.signals[signal] : 1);
-      } catch (error: unknown) {
-        throw codexError(error as Error);
-      } finally {
-        process.off('SIGINT', interrupt);
-        process.off('SIGTERM', terminate);
-      }
+      return await executeCodex(owner, home, args);
     } finally {
       await syncProfileHome(name);
     }
